@@ -6,7 +6,7 @@ import os
 
 #varales to change how the ranking is split
 files = 0
-total_domains = 1000000
+total_domains = 100
 randomize = True
 
 input_csv = "tranco_KW6JW.csv"
@@ -15,7 +15,7 @@ input_csv = "tranco_KW6JW.csv"
 wipe_ingested_files()
 
 #added to store split files is separate directory
-output_dir = "ingested-data"
+output_dir = "../ingested-data"
 os.makedirs(output_dir, exist_ok=True)
 
 #added so i could more easly run wipe.py to wipe files
