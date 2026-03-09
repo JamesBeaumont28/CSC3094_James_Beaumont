@@ -64,7 +64,7 @@ def main(
     stop_category="timeout",
     stop_ratio=0.3,
     min_seen=2000,
-    rate_limit=100,
+    rate_limit=200,
 ):
 
     targets_file = Path(targets_path)
@@ -143,25 +143,39 @@ def main(
 
     # thread to feed targets into zgrab at a rate limit
     def feed_targets():
+        # splits sending into chunks
+        # 0.1 is capped at ~600 per second
+        # 0.2 would be ~1200 etc
+        interval = 0.1
 
-        delay = 1 / rate_limit if rate_limit > 0 else 0
+        # how many targets per batch
+        batch_size = max(1, int(rate_limit / 10)) if rate_limit > 0 else len(targets)
 
-        for i, target in enumerate(targets):
+        index = 0
 
-            # stop feeding if stop condition triggered
+        while index < len(targets):
+
+            # stops feeding if stop condition triggered
             if stop_scan.is_set():
                 print("\nerror detected, stopping feeder")
                 break
 
-            # rate limiting
-            if i != 0 and delay > 0:
-                time.sleep(delay)
+            batch_end = min(index + batch_size, len(targets))
 
             try:
-                proc.stdin.write(target + "\n")
+                #sends a chunk of targets
+                for target in targets[index:batch_end]:
+                    proc.stdin.write(target + "\n")
+
                 proc.stdin.flush()
+
             except BrokenPipeError:
                 break
+
+            index = batch_end
+
+            if rate_limit > 0:
+                time.sleep(interval)
 
         # close stdin when finished
         try:
@@ -169,10 +183,9 @@ def main(
         except Exception:
             pass
 
-    # ---------------------------------------------------
-    # thread 2 : continuously read stderr
+
+    # thread that continuously reads stderr
     # prevents pipe buffer blocking
-    # ---------------------------------------------------
     def drain_stderr():
 
         for line in proc.stderr:
@@ -185,9 +198,7 @@ def main(
     feeder.start()
     stderr_thread.start()
 
-    # ---------------------------------------------------
     # main loop reading zgrab stdout
-    # ---------------------------------------------------
     with out_file.open("w", encoding="utf-8") as fout:
 
         for line in proc.stdout:
