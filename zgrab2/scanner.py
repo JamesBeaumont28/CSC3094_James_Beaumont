@@ -4,6 +4,7 @@ import sys
 import time
 from collections import Counter, deque
 from pathlib import Path
+import threading
 
 def classify_error(err: str) -> str:
     e = err.lower()
@@ -50,7 +51,6 @@ def get_error(obj: dict) -> str | None:
         if isinstance(c, str) and c.strip():
             return c.strip()
     return None
-
 
 def main(
     #key info
@@ -115,16 +115,22 @@ def main(
     #verifys the input, output and error log exist otherwise it errors
     assert proc.stdin and proc.stdout and proc.stderr
 
-    delay = 1/rate_limit if rate_limit > 0 else 0
-    stop_scan = False
+    def feed_targets():
+        # gives zgrab domains at a caped rate
+        delay = 1 / rate_limit if rate_limit > 0 else 0
 
-    for target in targets:
-        if stop_scan:
-            break
-        proc.stdin.write(target + "\n")
-        proc.stdin.flush()
-        time.sleep(delay)
-    proc.stdin.close()
+        for target in targets:
+            if stop_scan:
+                break
+            proc.stdin.write(target + "\n")
+            proc.stdin.flush()
+            time.sleep(delay)
+        proc.stdin.close()
+
+    #runs the feeder simultaneously to the rest of the code
+    stop_scan = False
+    feeder = threading.Thread(target=feed_targets)
+    feeder.start()
 
     #info for progress check
     rolling = deque(maxlen=window_size)
