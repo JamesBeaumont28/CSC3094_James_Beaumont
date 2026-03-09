@@ -1,0 +1,10 @@
+services:
+  zgrab2:
+    build:
+      context: ./zgrab2
+    container_name: zgrab2-runner
+    working_dir: /work
+    volumes:
+      - ./:/work
+    stdin_open: true
+    tty: false

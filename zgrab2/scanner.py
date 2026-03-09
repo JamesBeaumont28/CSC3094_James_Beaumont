@@ -40,7 +40,7 @@ def classify_error(err: str) -> str:
     return "other"
 
 def get_error(obj: dict) -> str | None:
-    # zgrab2 error locations vary by module/version tryingf to narrow down
+    # zgrab2 error locations vary by module/version trying to narrow down
     candidates = [
         obj.get("error"),
         obj.get("data", {}).get("tls", {}).get("error"),
@@ -54,9 +54,9 @@ def get_error(obj: dict) -> str | None:
 
 def main(
     #key info
-    targets_path="targets.txt",
-    out_path="tls_results.jsonl",
-    window_size=2000,
+    targets_path="../ingested-data/domains_1.csv",
+    out_path="../ingested-data/tls_results.jsonl",
+    window_size=20,
     stop_category="timeout",
     #percentage of failed connections to stop
     stop_ratio=0.30,
@@ -65,6 +65,7 @@ def main(
     #how often the progress is updated
     report_every=200,
 ):
+    print("hello world")
     targets_file = Path(targets_path)
     out_file = Path(out_path)
 
@@ -79,6 +80,7 @@ def main(
         print("No targets found.")
         sys.exit(1)
 
+    #the structure of the command to run ZGrab2
     cmd = [
         "docker", "compose", "run", "--rm", "-T", "zgrab2",
         "tls",
@@ -167,6 +169,6 @@ def main(
         if rc != 0 and stderr.strip():
             print("stderr:\n", stderr[:4000])
 
-    if __name__ == "__main__":
-        # Defaults stop on too many timeouts, which is a better “something is wrong” signal than refused.
-        main()
+if __name__ == "__main__":
+    # Defaults stop on too many timeouts, which is a better “something is wrong” signal than refused.
+    main()

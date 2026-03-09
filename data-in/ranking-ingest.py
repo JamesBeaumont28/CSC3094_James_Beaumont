@@ -5,11 +5,11 @@ from wipe import wipe_ingested_files
 import os
 
 #varales to change how the ranking is split
-files = 0
+files = 1
 total_domains = 100
 randomize = True
 
-input_csv = "tranco_KW6JW.csv"
+input_csv = "tranco_QW8X4.csv"
 
 #clears all previsouly ingested files
 wipe_ingested_files()
