@@ -1,0 +1,45 @@
+# made with chatGPT
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# -----------------------------
+# IDE
+# -----------------------------
+.idea/
+.vscode/
+
+# -----------------------------
+# OS junk
+# -----------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------
+# Generated scan results
+# -----------------------------
+
+# Ignore everything inside ingested-data
+ingested-data/*
+
+# But keep the folder itself
+!ingested-data/.gitkeep
+
+# -----------------------------
+# Ignore local runtime files
+# -----------------------------
+files/tls_results.jsonl
+
+# -----------------------------
+# Ignore Tranco dataset
+# -----------------------------
+data-in/tranco_*.csv

@@ -2,9 +2,9 @@ services:
   zgrab2:
     build:
       context: ./zgrab2
-    container_name: zgrab2-runner
     working_dir: /work
     volumes:
       - ./:/work
+      - ./zgrab-config:/root/.config/zgrab2
     stdin_open: true
     tty: false

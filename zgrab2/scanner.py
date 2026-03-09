@@ -56,14 +56,16 @@ def main(
     #key info
     targets_path="../ingested-data/domains_1.csv",
     out_path="../ingested-data/tls_results.jsonl",
-    window_size=20,
+    window_size=50,
     stop_category="timeout",
     #percentage of failed connections to stop
-    stop_ratio=0.30,
+    stop_ratio=0.01,
     #minimum scans before stopping
-    min_seen=500,
+    min_seen=10,
     #how often the progress is updated
-    report_every=200,
+    report_every=50,
+    #caps the number of domains given to the ZGrab instance very second
+    rate_limit = 10,
 ):
     print("hello world")
     targets_file = Path(targets_path)
@@ -75,18 +77,28 @@ def main(
         print(f"Missing {targets_file}")
         sys.exit(1)
 
-    targets = [t.strip() for t in targets_file.read_text(encoding="utf-8", errors="replace").splitlines() if t.strip()]
+    targets = []
+    #removes ranking numbers from input ie: 1,"google.com" becomes "google.com"
+    for line in targets_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.split(",", 1)
+        if len(parts) == 2:
+            targets.append(parts[1].strip())
+        else:
+            targets.append(line)
+
     if not targets:
-        print("No targets found.")
+        print("Targets file empty, input is likely empty too.")
         sys.exit(1)
 
-    #the structure of the command to run ZGrab2
+    #the structure of the command to initialize docker and run ZGrab2
     cmd = [
         "docker", "compose", "run", "--rm", "-T", "zgrab2",
         "tls",
         "--port", "443",
-        "--timeout", "10s",
-        "--retry", "0",
     ]
 
     print("Starting:", " ".join(cmd))
@@ -103,8 +115,15 @@ def main(
     #verifys the input, output and error log exist otherwise it errors
     assert proc.stdin and proc.stdout and proc.stderr
 
-    #writes all the domains to a long text and sends it to the ZGrab instance then closes it after its done
-    proc.stdin.write("\n".join(targets) + "\n")
+    delay = 1/rate_limit if rate_limit > 0 else 0
+    stop_scan = False
+
+    for target in targets:
+        if stop_scan:
+            break
+        proc.stdin.write(target + "\n")
+        proc.stdin.flush()
+        time.sleep(delay)
     proc.stdin.close()
 
     #info for progress check
@@ -155,7 +174,9 @@ def main(
                         f"Stopping: rolling {stop_category} fraction {stop_frac:.1%} "
                         f"exceeded threshold {stop_ratio:.1%}."
                     )
+                    stop_scan= True
                     proc.terminate()
+                    #print("--------------------------------termination line has ran-----------------------------")
                     break
 
         # Collect stderr for debugging
