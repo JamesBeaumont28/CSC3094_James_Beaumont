@@ -6,7 +6,7 @@ import os
 
 #varales to change how the ranking is split
 files = 1
-total_domains = 100
+total_domains = 5000
 randomize = True
 
 input_csv = "tranco_QW8X4.csv"
