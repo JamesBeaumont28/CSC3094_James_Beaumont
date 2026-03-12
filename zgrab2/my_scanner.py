@@ -287,6 +287,7 @@ def raw_handshake(ip: str, hostname: str, groups: list, timeout: int) -> dict:
     # reads the ServerHello and returns the parsed result
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(timeout)
 
     try:
@@ -725,8 +726,8 @@ if __name__ == "__main__":
     main(
         targets_path="../ingested-data/domains_1.csv",
         out_path="../results/pqc_results_1.jsonl",
-        workers=400,
+        workers=75,
         timeout=10,
-        dns_rate_limit=75,
+        dns_rate_limit=50,
         start_from=0,
     )
