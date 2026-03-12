@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
-# identifies this scanner to server operators who check their logs
+# info for HTTPS request
 RESEARCHER_ID = (
     "Newcastle University School of Computing PQC Survey | "
     "Contact: J.Beaumont2@ncl.ac.uk | "
@@ -22,7 +22,7 @@ RESEARCHER_ID = (
 )
 
 # HTTP request sent after the TLS handshake so server operators can identify the scan
-# written with the help of claude
+# wrote http request parts with the help of claude
 HTTP_IDENT_REQUEST = (
     "HEAD / HTTP/1.1\r\n"
     "Host: {host}\r\n"
@@ -33,6 +33,85 @@ HTTP_IDENT_REQUEST = (
     "Connection: close\r\n\r\n"
 )
 
+# TLS record and handshake type constants
+TLS_VERSION_12         = b'\x03\x03'
+HANDSHAKE_CLIENT_HELLO = 0x01
+CONTENT_TYPE_HANDSHAKE = 0x16
+
+# IANA group codes for all key exchange groups were looknig for
+# classical groups are included so the server can fall back if it does not support PQC
+NAMED_GROUPS = {
+    # classical
+    "X25519":                   0x001D,
+    "secp256r1":                0x0017,
+    "secp384r1":                0x0018,
+    # hybrid ML KEM (NIST FIPS 203 standard)
+    "X25519MLKEM768":           0x11EC,
+    "SecP256r1MLKEM768":        0x11EB,
+    # pure ML KEM
+    "MLKEM512":                 0x0200,
+    "MLKEM768":                 0x0201,
+    "MLKEM1024":                0x0202,
+    # legacy Kyber draft codes used by Cloudflare and Google before standardisation
+    "X25519Kyber768Draft00":    0x6399,
+    "SecP256r1Kyber768Draft00": 0x639A,
+}
+
+# reverse lookup used when parsing the ServerHello to get a name from a code
+CODE_TO_NAME = {v: k for k, v in NAMED_GROUPS.items()}
+
+# set of group names considered post quantum for has_pqc flagging
+PQC_GROUPS = {
+    "X25519MLKEM768", "SecP256r1MLKEM768",
+    "MLKEM512", "MLKEM768", "MLKEM1024",
+    "X25519Kyber768Draft00", "SecP256r1Kyber768Draft00",
+}
+
+# PQC groups ordered by real world prevalence so we detect the most common ones first
+# this reduces the number of follow-up probes needed on average
+# order is based on deployment data: X25519MLKEM768 dominates (Cloudflare, Google),
+# legacy Kyber draft is second, pure ML-KEM and SecP256r1 variants are rare
+PQC_PROBE_ORDER = [
+    NAMED_GROUPS["X25519MLKEM768"],           # most common - deployed by Cloudflare and Google
+    NAMED_GROUPS["X25519Kyber768Draft00"],     # second most common - legacy Cloudflare/Google
+    NAMED_GROUPS["SecP256r1MLKEM768"],         # rare - P256 hybrid variant
+    NAMED_GROUPS["SecP256r1Kyber768Draft00"],  # rare - P256 legacy hybrid
+    NAMED_GROUPS["MLKEM768"],                  # rare - pure ML-KEM without classical hybrid
+    NAMED_GROUPS["MLKEM1024"],                 # rare - pure ML-KEM high security
+    NAMED_GROUPS["MLKEM512"],                  # rare - pure ML-KEM low security
+]
+
+# full advertised group list: PQC in prevalence order first, then classical fallbacks
+ADVERTISED_GROUPS = PQC_PROBE_ORDER + [
+    NAMED_GROUPS["X25519"],
+    NAMED_GROUPS["secp256r1"],
+    NAMED_GROUPS["secp384r1"],
+]
+
+# cipher suites advertised in the ClientHello
+# server picks one from this list
+CIPHER_SUITES = [
+    0x1301,  # TLS_AES_128_GCM_SHA256
+    0x1302,  # TLS_AES_256_GCM_SHA384
+    0x1303,  # TLS_CHACHA20_POLY1305_SHA256
+    0xC02B,  # TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    0xC02C,  # TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+    0xC02F,  # TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    0xC030,  # TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+]
+
+# signature algorithms advertised in the ClientHello
+SIG_ALGS = [
+    0x0403,  # ecdsa_secp256r1_sha256
+    0x0503,  # ecdsa_secp384r1_sha384
+    0x0603,  # ecdsa_secp521r1_sha512
+    0x0804,  # rsa_pss_rsae_sha256
+    0x0805,  # rsa_pss_rsae_sha384
+    0x0806,  # rsa_pss_rsae_sha512
+    0x0401,  # rsa_pkcs1_sha256
+    0x0501,  # rsa_pkcs1_sha384
+    0x0601,  # rsa_pkcs1_sha512
+]
 
 # token bucket that limits how many DNS lookups per second all workers can make combined
 class DNSRateLimiter:
@@ -60,70 +139,6 @@ class DNSRateLimiter:
 
             # no token available yet, wait briefly before retrying
             time.sleep(0.01)
-
-
-# TLS record and handshake type constants
-TLS_VERSION_12         = b'\x03\x03'
-HANDSHAKE_CLIENT_HELLO = 0x01
-CONTENT_TYPE_HANDSHAKE = 0x16
-
-# IANA group codes for all key exchange groups were looknig for
-# classical groups are included so the server can fall back if it does not support PQC
-NAMED_GROUPS = {
-    # classical
-    "X25519":                   0x001D,
-    "secp256r1":                0x0017,
-    "secp384r1":                0x0018,
-    # hybrid ML KEM (NIST FIPS 203 standard)
-    "X25519MLKEM768":           0x11EC,
-    "SecP256r1MLKEM768":        0x11EB,
-    # pure ML KEM
-    "MLKEM512":                 0x0200,
-    "MLKEM768":                 0x0201,
-    "MLKEM1024":                0x0202,
-    # legacy Kyber draft codes used by Cloudflare and Google before standardisation
-    "X25519Kyber768Draft00":    0x6399,
-    "SecP256r1Kyber768Draft00": 0x639A,
-}
-
-# flat list of group codes sent in the ClientHello supported_groups extension
-ADVERTISED_GROUPS = list(NAMED_GROUPS.values())
-
-# reverse lookup used when parsing the ServerHello to get a name from a code
-CODE_TO_NAME = {v: k for k, v in NAMED_GROUPS.items()}
-
-# set of group names considered post quantum for has_pqc flagging
-PQC_GROUPS = {
-    "X25519MLKEM768", "SecP256r1MLKEM768",
-    "MLKEM512", "MLKEM768", "MLKEM1024",
-    "X25519Kyber768Draft00", "SecP256r1Kyber768Draft00",
-}
-
-# cipher suites advertised in the ClientHello
-# server picks one from this list
-CIPHER_SUITES = [
-    0x1301,  # TLS_AES_128_GCM_SHA256
-    0x1302,  # TLS_AES_256_GCM_SHA384
-    0x1303,  # TLS_CHACHA20_POLY1305_SHA256
-    0xC02B,  # TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-    0xC02C,  # TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-    0xC02F,  # TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-    0xC030,  # TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-]
-
-# signature algorithms advertised in the ClientHello
-SIG_ALGS = [
-    0x0403,  # ecdsa_secp256r1_sha256
-    0x0503,  # ecdsa_secp384r1_sha384
-    0x0603,  # ecdsa_secp521r1_sha512
-    0x0804,  # rsa_pss_rsae_sha256
-    0x0805,  # rsa_pss_rsae_sha384
-    0x0806,  # rsa_pss_rsae_sha512
-    0x0401,  # rsa_pkcs1_sha256
-    0x0501,  # rsa_pkcs1_sha384
-    0x0601,  # rsa_pkcs1_sha512
-]
-
 
 def build_client_hello(hostname: str) -> bytes:
     # builds a TLS 1.3 ClientHello packet advertising all PQC and classical groups
@@ -203,6 +218,112 @@ def build_client_hello(hostname: str) -> bytes:
     )
 
     return record
+
+
+def build_client_hello_groups(hostname: str, groups: list) -> bytes:
+    # same as build_client_hello but accepts a custom group list
+    # used when re-probing after removing already detected PQC groups
+
+    random_bytes  = os.urandom(32)
+    session_id    = os.urandom(32)
+
+    cs_bytes      = b"".join(struct.pack("!H", cs) for cs in CIPHER_SUITES)
+    cipher_suites = struct.pack("!H", len(cs_bytes)) + cs_bytes
+    compression   = b"\x01\x00"
+
+    sni_name  = hostname.encode()
+    sni_entry = struct.pack("!BH", 0, len(sni_name)) + sni_name
+    sni_list  = struct.pack("!H", len(sni_entry)) + sni_entry
+    ext_sni   = struct.pack("!HH", 0x0000, len(sni_list)) + sni_list
+
+    versions     = struct.pack("!HH", 0x0304, 0x0303)
+    ext_versions = struct.pack("!HHB", 0x002B, len(versions) + 1, len(versions)) + versions
+
+    groups_bytes = b"".join(struct.pack("!H", g) for g in groups)
+    groups_list  = struct.pack("!H", len(groups_bytes)) + groups_bytes
+    ext_groups   = struct.pack("!HH", 0x000A, len(groups_list)) + groups_list
+
+    sig_bytes   = b"".join(struct.pack("!H", s) for s in SIG_ALGS)
+    sig_list    = struct.pack("!H", len(sig_bytes)) + sig_bytes
+    ext_sigalgs = struct.pack("!HH", 0x000D, len(sig_list)) + sig_list
+
+    ks_key_data  = os.urandom(32)
+    ks_entry     = struct.pack("!HH", 0x001D, len(ks_key_data)) + ks_key_data
+    ks_list      = struct.pack("!H", len(ks_entry)) + ks_entry
+    ext_keyshare = struct.pack("!HH", 0x0033, len(ks_list)) + ks_list
+
+    alpn_protos = b"\x02h2\x08http/1.1"
+    alpn_list   = struct.pack("!H", len(alpn_protos)) + alpn_protos
+    ext_alpn    = struct.pack("!HH", 0x0010, len(alpn_list)) + alpn_list
+
+    extensions = ext_sni + ext_versions + ext_groups + ext_sigalgs + ext_keyshare + ext_alpn
+    ext_block  = struct.pack("!H", len(extensions)) + extensions
+
+    hello_body = (
+        TLS_VERSION_12 +
+        random_bytes +
+        struct.pack("B", len(session_id)) + session_id +
+        cipher_suites +
+        compression +
+        ext_block
+    )
+
+    handshake = (
+        struct.pack("B", HANDSHAKE_CLIENT_HELLO) +
+        struct.pack("!I", len(hello_body))[1:] +
+        hello_body
+    )
+
+    return (
+        bytes([CONTENT_TYPE_HANDSHAKE]) +
+        TLS_VERSION_12 +
+        struct.pack("!H", len(handshake)) +
+        handshake
+    )
+
+
+def raw_handshake(ip: str, hostname: str, groups: list, timeout: int) -> dict:
+    # opens a raw TCP connection, sends a ClientHello with the given group list,
+    # reads the ServerHello and returns the parsed result
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+
+    try:
+        sock.connect((ip, 443))
+    except (ConnectionRefusedError, OSError):
+        return {"status": "connect_failed"}
+
+    sock.sendall(build_client_hello_groups(hostname, groups))
+
+    # read the full TLS record based on the length in the record header
+    response = b""
+    try:
+        while len(response) < 5:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+
+        if len(response) >= 5:
+            record_len = struct.unpack("!H", response[3:5])[0]
+            target = 5 + record_len
+            while len(response) < target:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+    except socket.timeout:
+        pass
+    finally:
+        sock.close()
+
+    if not response:
+        return {"status": "no_response"}
+
+    parsed           = parse_server_hello(response)
+    parsed["status"] = "ok"
+    return parsed
 
 
 def parse_server_hello(data: bytes) -> dict:
@@ -314,9 +435,11 @@ def parse_server_hello(data: bytes) -> dict:
 
 
 def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = None) -> dict:
-    # scans a single domain for PQC key exchange support
-    # step 1: send a raw ClientHello and parse the ServerHello to detect the selected group
-    # step 2: send an identified HTTP request so server operators can see who is scanning
+    # scans a single domain for all supported PQC key exchange groups
+    # first probe advertises all groups, server picks its preferred PQC group
+    # subsequent probes remove already found groups, forcing the server to reveal its next preference
+    # stops when the server stops picking a PQC group or a probe fails
+    # then sends an identified HTTP request so server operators know who is scanning
 
     base = {
         "domain":               domain,
@@ -325,10 +448,9 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
         "status_detail":        None,
         "tls_version":          None,
         "cipher_suite":         None,
-        "key_share_group":      None,
-        "key_share_group_name": None,
+        "pqc_groups_supported": [],
         "has_pqc":              False,
-        "pqc_group":            None,
+        "probe_count":          0,
     }
 
     try:
@@ -342,46 +464,49 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
         except socket.gaierror:
             return {**base, "status": "dns_error"}
 
-        # open a raw TCP connection and send the crafted ClientHello
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
+        # track which PQC groups we have confirmed so far
+        # start with all groups advertised, remove each one as the server selects it
+        remaining_groups = ADVERTISED_GROUPS[:]
+        pqc_found        = []
+        tls_version      = None
+        cipher_suite     = None
+        status_detail    = None
+        probe_count      = 0
 
-        try:
-            sock.connect((ip, 443))
-        except (ConnectionRefusedError, OSError):
-            return {**base, "status": "connect_failed"}
+        while True:
+            result      = raw_handshake(ip, domain, remaining_groups, timeout)
+            probe_count += 1
 
-        sock.sendall(build_client_hello(domain))
+            if result["status"] != "ok":
+                # if the very first probe fails, the domain is unreachable
+                if probe_count == 1:
+                    return {**base, "status": result["status"]}
+                # if a follow-up probe fails, stop here and use what we already found
+                break
 
-        # read the full TLS record based on the length in the record header
-        response = b""
-        try:
-            while len(response) < 5:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                response += chunk
+            # capture version and cipher from the first probe only
+            if probe_count == 1:
+                tls_version   = result.get("tls_version")
+                cipher_suite  = result.get("cipher_suite")
+                status_detail = result.get("status_detail")
 
-            if len(response) >= 5:
-                record_len = struct.unpack("!H", response[3:5])[0]
-                target = 5 + record_len
-                while len(response) < target:
-                    chunk = sock.recv(4096)
-                    if not chunk:
-                        break
-                    response += chunk
-        except socket.timeout:
-            pass
-        finally:
-            sock.close()
+            group_name = result.get("key_share_group_name")
 
-        if not response:
-            return {**base, "status": "no_response"}
+            # if the server did not select a PQC group we have found everything it supports
+            if group_name not in PQC_GROUPS:
+                break
 
-        parsed     = parse_server_hello(response)
-        group_name = parsed.get("key_share_group_name")
-        has_pqc    = group_name in PQC_GROUPS if group_name else False
+            pqc_found.append(group_name)
 
+            # remove the detected group from the list so the server is forced to choose another
+            group_code       = NAMED_GROUPS[group_name]
+            remaining_groups = [g for g in remaining_groups if g != group_code]
+
+            # stop if there are no PQC groups left to probe for
+            if not any(g in remaining_groups for g in PQC_PROBE_ORDER):
+                break
+            #addded to try deduce error count
+            time.sleep(0.3)
         # send a proper HTTPS request with researcher identification headers
         # this is best effort so failures here do not affect the scan result
         try:
@@ -399,13 +524,12 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
         return {
             **base,
             "status":               "ok",
-            "status_detail":        parsed.get("status_detail"),
-            "tls_version":          parsed.get("tls_version"),
-            "cipher_suite":         parsed.get("cipher_suite"),
-            "key_share_group":      parsed.get("key_share_group"),
-            "key_share_group_name": group_name,
-            "has_pqc":              has_pqc,
-            "pqc_group":            group_name if has_pqc else None,
+            "status_detail":        status_detail,
+            "tls_version":          tls_version,
+            "cipher_suite":         cipher_suite,
+            "pqc_groups_supported": pqc_found,
+            "has_pqc":              len(pqc_found) > 0,
+            "probe_count":          probe_count,
         }
 
     except socket.timeout:
@@ -416,14 +540,14 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
 
 def main(
     targets_path="../ingested-data/domains_1.csv",
-    out_path="../results/pqc_results.jsonl",
+    out_path="../results/pqc_results_2.jsonl",
     workers=100,
     timeout=10,
-    window_size=200,
-    stop_ratio=0.8,
-    min_seen=100,
+    window_size=500,
+    stop_ratio=0.6,
+    min_seen=500,
     start_from=0,
-    dns_rate_limit=500,
+    dns_rate_limit=75,
 ):
     targets_file = Path(targets_path)
     out_file     = Path(out_path)
@@ -489,6 +613,7 @@ def main(
             with out_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(result) + "\n")
 
+            # update values for progress display
             totals["done"] += 1
             status = result["status"]
 
@@ -501,8 +626,9 @@ def main(
 
             if result["has_pqc"]:
                 totals["pqc_found"] += 1
-                group = result.get("pqc_group", "unknown")
-                totals[f"pqc:{group}"] += 1
+                # count each supported PQC group individually for the breakdown
+                for group in result.get("pqc_groups_supported", []):
+                    totals[f"pqc:{group}"] += 1
 
             # trim rolling window to the configured size
             if len(rolling) > window_size:
@@ -551,6 +677,7 @@ def main(
     progress_thread = threading.Thread(target=show_progress, daemon=True)
     progress_thread.start()
 
+    # starts and stops all worker instances, also stops them if error rate is exceeded
     try:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(process, item): item for item in targets}
@@ -562,7 +689,7 @@ def main(
                     future.result()
                 except Exception:
                     pass
-
+    # except is here to stop incomplete writes to output file in case of interruption
     except KeyboardInterrupt:
         print("\nInterrupted.")
         stop_event.set()
@@ -597,9 +724,9 @@ def main(
 if __name__ == "__main__":
     main(
         targets_path="../ingested-data/domains_1.csv",
-        out_path="../results/pqc_results.jsonl",
-        workers=100,
+        out_path="../results/pqc_results_1.jsonl",
+        workers=400,
         timeout=10,
-        dns_rate_limit=500,
+        dns_rate_limit=75,
         start_from=0,
     )
