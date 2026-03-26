@@ -154,8 +154,8 @@ def main(
             try:
                 db_cursor.executemany("""
                         INSERT INTO good_responses
-                            (domain_rank, ip, domain, status, cipher_suite, has_pqc)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                            (domain_rank, ip, domain, status, cipher_suite, tls_version, has_pqc)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """, good_rows)
                 good_count += db_cursor.rowcount
             except mysql.connector.Error as err:
@@ -235,6 +235,8 @@ def main(
                     data["domain"],
                     data["status"],
                     data.get("cipher_suite"),
+                    data.get("tls_version"),
+
                     data.get("has_pqc"),
                 ))
                 for proto_name in data.get("pqc_groups_supported") or []:

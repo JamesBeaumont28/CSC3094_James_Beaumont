@@ -13,14 +13,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # suppress harmless deprecation warnings from cryptography library
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-
-# info for HTTPS request
-RESEARCHER_ID = (
-    "Newcastle University School of Computing PQC Survey | "
-    "Contact: J.Beaumont2@ncl.ac.uk | "
-    "This is academic security research scanning for post-quantum TLS support"
-)
-
 # HTTP request sent after the TLS handshake so server operators can identify the scan
 # wrote http request parts with the help of claude
 HTTP_IDENT_REQUEST = (
@@ -48,6 +40,8 @@ NAMED_GROUPS = {
     # hybrid ML KEM (NIST FIPS 203 standard)
     "X25519MLKEM768":           0x11EC,
     "SecP256r1MLKEM768":        0x11EB,
+    # secP384 is a new hybrid protocol, likely not implim,ented much anywhere
+    "SecP384r1MLKEM1024":       0x11ED,
     # pure ML KEM
     "MLKEM512":                 0x0200,
     "MLKEM768":                 0x0201,
@@ -55,6 +49,8 @@ NAMED_GROUPS = {
     # legacy Kyber draft codes used by Cloudflare and Google before standardisation
     "X25519Kyber768Draft00":    0x6399,
     "SecP256r1Kyber768Draft00": 0x639A,
+    # a chinese hybrid protocol
+    "curveSM2MLKEM768":         0x11EE,
 }
 
 # reverse lookup used when parsing the ServerHello to get a name from a code
@@ -65,6 +61,7 @@ PQC_GROUPS = {
     "X25519MLKEM768", "SecP256r1MLKEM768",
     "MLKEM512", "MLKEM768", "MLKEM1024",
     "X25519Kyber768Draft00", "SecP256r1Kyber768Draft00",
+    "curveSM2MLKEM768", "SecP384r1MLKEM1024"
 }
 
 # PQC groups ordered by real world prevalence so we detect the most common ones first
@@ -72,13 +69,15 @@ PQC_GROUPS = {
 # order is based on deployment data: X25519MLKEM768 dominates (Cloudflare, Google),
 # legacy Kyber draft is second, pure ML-KEM and SecP256r1 variants are rare
 PQC_PROBE_ORDER = [
-    NAMED_GROUPS["X25519MLKEM768"],           # most common - deployed by Cloudflare and Google
-    NAMED_GROUPS["X25519Kyber768Draft00"],     # second most common - legacy Cloudflare/Google
-    NAMED_GROUPS["SecP256r1MLKEM768"],         # rare - P256 hybrid variant
-    NAMED_GROUPS["SecP256r1Kyber768Draft00"],  # rare - P256 legacy hybrid
-    NAMED_GROUPS["MLKEM768"],                  # rare - pure ML-KEM without classical hybrid
-    NAMED_GROUPS["MLKEM1024"],                 # rare - pure ML-KEM high security
-    NAMED_GROUPS["MLKEM512"],                  # rare - pure ML-KEM low security
+    NAMED_GROUPS["X25519MLKEM768"],
+    NAMED_GROUPS["X25519Kyber768Draft00"],
+    NAMED_GROUPS["SecP256r1MLKEM768"],
+    NAMED_GROUPS["SecP256r1Kyber768Draft00"],
+    NAMED_GROUPS["SecP384r1MLKEM1024"],
+    NAMED_GROUPS["curveSM2MLKEM768"],
+    NAMED_GROUPS["MLKEM768"],
+    NAMED_GROUPS["MLKEM1024"],
+    NAMED_GROUPS["MLKEM512"],
 ]
 
 # full advertised group list: PQC in prevalence order first, then classical fallbacks
@@ -140,88 +139,8 @@ class DNSRateLimiter:
             # no token available yet, wait briefly before retrying
             time.sleep(0.01)
 
-def build_client_hello(hostname: str) -> bytes:
-    # builds a TLS 1.3 ClientHello packet advertising all PQC and classical groups
-
-    random_bytes = os.urandom(32)
-    session_id   = os.urandom(32)
-
-    # pack cipher suites as a length prefixed list of 2 byte codes
-    cs_bytes      = b"".join(struct.pack("!H", cs) for cs in CIPHER_SUITES)
-    cipher_suites = struct.pack("!H", len(cs_bytes)) + cs_bytes
-
-    # no compression
-    compression = b"\x01\x00"
-
-    # SNI extension tells the server which domain we want
-    # without this many servers won't respond correctly
-    sni_name  = hostname.encode()
-    sni_entry = struct.pack("!BH", 0, len(sni_name)) + sni_name
-    sni_list  = struct.pack("!H", len(sni_entry)) + sni_entry
-    ext_sni   = struct.pack("!HH", 0x0000, len(sni_list)) + sni_list
-
-    # supported_versions extension is how TLS 1.3 is actually requested
-    # the record header uses TLS 1.2 for backwards compatibility
-    versions     = struct.pack("!HH", 0x0304, 0x0303)
-    ext_versions = struct.pack("!HHB", 0x002B, len(versions) + 1, len(versions)) + versions
-
-    # supported_groups extension lists all key exchange groups we claim to support
-    # including PQC groups so the server knows it can select them
-    groups_bytes = b"".join(struct.pack("!H", g) for g in ADVERTISED_GROUPS)
-    groups_list  = struct.pack("!H", len(groups_bytes)) + groups_bytes
-    ext_groups   = struct.pack("!HH", 0x000A, len(groups_list)) + groups_list
-
-    # signature algorithms extension
-    sig_bytes   = b"".join(struct.pack("!H", s) for s in SIG_ALGS)
-    sig_list    = struct.pack("!H", len(sig_bytes)) + sig_bytes
-    ext_sigalgs = struct.pack("!HH", 0x000D, len(sig_list)) + sig_list
-
-    # key_share extension sends an initial X25519 public key as an optimistic guess
-    # we use random bytes instead of a real keypair since we never complete the handshake
-    ks_key_data  = os.urandom(32)
-    ks_entry     = struct.pack("!HH", 0x001D, len(ks_key_data)) + ks_key_data
-    ks_list      = struct.pack("!H", len(ks_entry)) + ks_entry
-    ext_keyshare = struct.pack("!HH", 0x0033, len(ks_list)) + ks_list
-
-    # ALPN extension advertises supported application protocols
-    alpn_protos = b"\x02h2\x08http/1.1"
-    alpn_list   = struct.pack("!H", len(alpn_protos)) + alpn_protos
-    ext_alpn    = struct.pack("!HH", 0x0010, len(alpn_list)) + alpn_list
-
-    # join all extensions into a single length prefixed block
-    extensions = ext_sni + ext_versions + ext_groups + ext_sigalgs + ext_keyshare + ext_alpn
-    ext_block  = struct.pack("!H", len(extensions)) + extensions
-
-    # ClientHello body: legacy version + random + session id + ciphers + compression + extensions
-    hello_body = (
-        TLS_VERSION_12 +
-        random_bytes +
-        struct.pack("B", len(session_id)) + session_id +
-        cipher_suites +
-        compression +
-        ext_block
-    )
-
-    # handshake header: type byte + 3 byte length (TLS uses 3 bytes here not 4)
-    handshake = (
-        struct.pack("B", HANDSHAKE_CLIENT_HELLO) +
-        struct.pack("!I", len(hello_body))[1:] +
-        hello_body
-    )
-
-    # outer TLS record: content type + legacy version + 2 byte length + handshake
-    record = (
-        bytes([CONTENT_TYPE_HANDSHAKE]) +
-        TLS_VERSION_12 +
-        struct.pack("!H", len(handshake)) +
-        handshake
-    )
-
-    return record
-
-
 def build_client_hello_groups(hostname: str, groups: list) -> bytes:
-    # same as build_client_hello but accepts a custom group list
+    # same as but accepts a custom group list
     # used when re-probing after removing already detected PQC groups
 
     random_bytes  = os.urandom(32)
@@ -322,7 +241,10 @@ def raw_handshake(ip: str, hostname: str, groups: list, timeout: int) -> dict:
     if not response:
         return {"status": "no_response"}
 
-    parsed           = parse_server_hello(response)
+    parsed = parse_server_hello(response)
+    # was overwritting caught exceptions here messing if data was classifieed as an error
+    if "status" in parsed:
+        return parsed
     parsed["status"] = "ok"
     return parsed
 
@@ -335,67 +257,22 @@ def parse_server_hello(data: bytes) -> dict:
     result = {
         "tls_version":          None,
         "cipher_suite":         None,
-        "key_share_group":      None,
         "key_share_group_name": None,
-        "status_detail":        None,
     }
 
     try:
-        if len(data) < 5:
-            result["status_detail"] = "response_too_short"
-            return result
-
-        content_type = data[0]
-
-        # content type 21 is a TLS alert, meaning the server rejected our ClientHello
-        if content_type == 0x15:
-            alert_desc = data[6] if len(data) > 6 else 0
-            result["status_detail"] = f"tls_alert_{alert_desc}"
-            return result
-
-        if content_type != CONTENT_TYPE_HANDSHAKE:
-            result["status_detail"] = f"unexpected_content_type_{content_type}"
-            return result
-
-        pos = 5
-
-        if len(data) < pos + 4:
-            result["status_detail"] = "truncated_handshake"
-            return result
-
-        hs_type = data[pos]
-        pos += 1
-
-        # handshake length is 3 bytes in TLS, so we pad with a zero byte to unpack as 4
-        hs_len = struct.unpack("!I", b'\x00' + data[pos:pos + 3])[0]
-        pos += 3
-
-        if hs_type != 0x02:
-            result["status_detail"] = f"unexpected_hs_type_{hs_type}"
-            return result
-
-        # skip legacy version field (2 bytes) and random (32 bytes)
-        pos += 34
-
-        # skip session id
-        if pos >= len(data):
-            result["status_detail"] = "truncated_session_id"
-            return result
+        pos = 43
         sid_len = data[pos]
         pos += 1 + sid_len
 
         # read cipher suite
         cs = struct.unpack("!H", data[pos:pos + 2])[0]
         result["cipher_suite"] = hex(cs)
-        pos += 2
-
-        # skip compression method
-        pos += 1
+        pos += 3
 
         # no extensions means this is a TLS 1.2 response
         if pos + 2 > len(data):
-            result["tls_version"]   = "TLSv1.2"
-            result["status_detail"] = "tls12_no_extensions"
+            result["tls_version"] = "TLSv1.2"
             return result
 
         ext_total = struct.unpack("!H", data[pos:pos + 2])[0]
@@ -408,21 +285,15 @@ def parse_server_hello(data: bytes) -> dict:
             ext_data = data[pos + 4:pos + 4 + ext_len]
             pos += 4 + ext_len
 
-            # supported_versions extension contains the actual negotiated TLS version
+            # was only returning TLS1.3 as 1.0 and 1.1 arnt read and 1.2 is caught above
             if ext_type == 0x002B and len(ext_data) >= 2:
                 ver = struct.unpack("!H", ext_data[:2])[0]
-                result["tls_version"] = {
-                    0x0304: "TLSv1.3",
-                    0x0303: "TLSv1.2",
-                    0x0302: "TLSv1.1",
-                    0x0301: "TLSv1.0",
-                }.get(ver, hex(ver))
+                result["tls_version"] = "TLSv1.3" if ver == 0x0304 else hex(ver)
 
             # key_share extension contains the group the server selected
             # if this is a PQC group the server supports post quantum key exchange
             if ext_type == 0x0033 and len(ext_data) >= 2:
                 group_code = struct.unpack("!H", ext_data[:2])[0]
-                result["key_share_group"]      = hex(group_code)
                 result["key_share_group_name"] = CODE_TO_NAME.get(group_code, f"unknown_0x{group_code:04x}")
 
         # if no supported_versions extension was present this is TLS 1.2
@@ -430,7 +301,7 @@ def parse_server_hello(data: bytes) -> dict:
             result["tls_version"] = "TLSv1.2"
 
     except Exception as e:
-        result["status_detail"] = f"parse_error: {type(e).__name__}"
+        result["status"] = f"parse_error: {type(e).__name__}"
 
     return result
 
@@ -446,12 +317,10 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
         "domain":               domain,
         "ip":                   None,
         "status":               None,
-        "status_detail":        None,
         "tls_version":          None,
         "cipher_suite":         None,
         "pqc_groups_supported": [],
         "has_pqc":              False,
-        "probe_count":          0,
     }
 
     try:
@@ -471,7 +340,6 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
         pqc_found        = []
         tls_version      = None
         cipher_suite     = None
-        status_detail    = None
         probe_count      = 0
 
         while True:
@@ -489,7 +357,6 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
             if probe_count == 1:
                 tls_version   = result.get("tls_version")
                 cipher_suite  = result.get("cipher_suite")
-                status_detail = result.get("status_detail")
 
             group_name = result.get("key_share_group_name")
 
@@ -506,8 +373,8 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
             # stop if there are no PQC groups left to probe for
             if not any(g in remaining_groups for g in PQC_PROBE_ORDER):
                 break
-            #addded to try deduce error count
-            time.sleep(0.3)
+
+            # time.sleep(0.3)
         # send a proper HTTPS request with researcher identification headers
         # this is best effort so failures here do not affect the scan result
         try:
@@ -525,12 +392,10 @@ def scan_domain(domain: str, timeout: int = 10, dns_limiter: DNSRateLimiter = No
         return {
             **base,
             "status":               "ok",
-            "status_detail":        status_detail,
             "tls_version":          tls_version,
             "cipher_suite":         cipher_suite,
             "pqc_groups_supported": pqc_found,
             "has_pqc":              len(pqc_found) > 0,
-            "probe_count":          probe_count,
         }
 
     except socket.timeout:
@@ -573,8 +438,6 @@ def main(
             except ValueError:
                 rank = None
             targets.append((rank, parts[1].strip()))
-        else:
-            targets.append((None, line))
 
     if not targets:
         print("No targets found.")
@@ -728,6 +591,6 @@ if __name__ == "__main__":
         out_path="../results/pqc_results_1.jsonl",
         workers=75,
         timeout=10,
-        dns_rate_limit=50,
+        dns_rate_limit=40,
         start_from=0,
     )
