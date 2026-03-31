@@ -28,10 +28,12 @@ def innit_db(cursor):
         domain_rank INT PRIMARY KEY,
         ip VARCHAR(45),
         region VARCHAR(255),
+        Continent VARCHAR(255),
         domain VARCHAR(255) NOT NULL,
         sector VARCHAR(255),
         status VARCHAR(50) NOT NULL,
         cipher_suite VARCHAR(100),
+        cdn_provider VARCHAR(100),
         tls_version VARCHAR(20),
         has_pqc BOOLEAN
         )""")
@@ -105,8 +107,8 @@ def main(
 
 
     required_schema = {
-        "good_responses" : {"rank","ip","region", "domain", "sector", "status",
-                            "cipher_suite", "tls_version", "has_pqc", "pqc_groups_supported"},
+        "good_responses" : {"rank","ip","region", "continent", "domain", "sector", "status",
+                            "cipher_suite", "tls_version", "cdn_provider", "has_pqc", "pqc_groups_supported"},
 
         "bad_responses": {"rank", "ip", "domain", "status", "status_detail"},
 
